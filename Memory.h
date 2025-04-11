@@ -19,5 +19,5 @@ BOOL
 detour_memory_free(
     _Frees_ptr_ PVOID BaseAddress);
 
-VOID
+BOOL
 detour_memory_uninitialize(VOID);

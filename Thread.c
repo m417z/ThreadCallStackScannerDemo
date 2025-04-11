@@ -1,4 +1,4 @@
-﻿/*
+/*
  * KNSoft.SlimDetours (https://github.com/KNSoft/KNSoft.SlimDetours) Thread management
  * Copyright (c) KNSoft.org (https://github.com/KNSoft). All rights reserved.
  * Licensed under the MIT license.
@@ -28,6 +28,7 @@ detour_thread_suspend(
     HANDLE CurrentTID = (HANDLE)(ULONG_PTR)NtCurrentThreadId();
     BOOL ClosePrevThread = FALSE;
     HANDLE ThreadHandle = NULL;
+
     while (TRUE)
     {
         HANDLE NextThreadHandle;
@@ -49,21 +50,18 @@ detour_thread_suspend(
         ThreadHandle = NextThreadHandle;
         ClosePrevThread = TRUE;
 
+        /* Skip the current thread */
         if (!CurrentThreadSkipped)
         {
             THREAD_BASIC_INFORMATION BasicInformation;
-            if (!NT_SUCCESS(NtQueryInformationThread(
-                ThreadHandle,
-                ThreadBasicInformation,
-                &BasicInformation,
-                sizeof(BasicInformation),
-                NULL
-            )))
+            if (!NT_SUCCESS(NtQueryInformationThread(ThreadHandle,
+                                                     ThreadBasicInformation,
+                                                     &BasicInformation,
+                                                     sizeof(BasicInformation),
+                                                     NULL)))
             {
                 continue;
             }
-
-            /* Skip the current thread */
             if (BasicInformation.ClientId.UniqueThread == CurrentTID)
             {
                 CurrentThreadSkipped = TRUE;
@@ -87,6 +85,10 @@ detour_thread_suspend(
             if (Buffer == s_Handles)
             {
                 p = (PHANDLE)detour_memory_alloc(BufferCapacity * sizeof(HANDLE));
+                if (p)
+                {
+                    RtlCopyMemory(p, Buffer, SuspendedCount * sizeof(HANDLE));
+                }
             } else
             {
                 p = (PHANDLE)detour_memory_realloc(Buffer, BufferCapacity * sizeof(HANDLE));
