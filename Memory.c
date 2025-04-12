@@ -9,12 +9,12 @@
 
 #include "Memory.h"
 
-static HANDLE _detour_memory_heap = NULL;
+static HANDLE _threadscan_memory_heap = NULL;
 
 static
 _Ret_notnull_
 HANDLE
-detour_memory_init(VOID)
+threadscan_memory_init(VOID)
 {
     HANDLE hHeap;
 
@@ -33,47 +33,47 @@ _Must_inspect_result_
 _Ret_maybenull_
 _Post_writable_byte_size_(Size)
 PVOID
-detour_memory_alloc(
+threadscan_memory_alloc(
     _In_ SIZE_T Size)
 {
     /*
-     * detour_memory_alloc is called BEFORE any other detour_memory_* functions,
+     * threadscan_memory_alloc is called BEFORE any other threadscan_memory_* functions,
      * and only one thread that owning pending transaction could reach here,
      * so it's safe to do the initialzation here and not use a lock.
      */
-    if (_detour_memory_heap == NULL)
+    if (_threadscan_memory_heap == NULL)
     {
-        _detour_memory_heap = detour_memory_init();
+        _threadscan_memory_heap = threadscan_memory_init();
     }
 
-    return RtlAllocateHeap(_detour_memory_heap, 0, Size);
+    return RtlAllocateHeap(_threadscan_memory_heap, 0, Size);
 }
 
 _Must_inspect_result_
 _Ret_maybenull_
 _Post_writable_byte_size_(Size)
 PVOID
-detour_memory_realloc(
+threadscan_memory_realloc(
     _Frees_ptr_opt_ PVOID BaseAddress,
     _In_ SIZE_T Size)
 {
-    return RtlReAllocateHeap(_detour_memory_heap, 0, BaseAddress, Size);
+    return RtlReAllocateHeap(_threadscan_memory_heap, 0, BaseAddress, Size);
 }
 
 BOOL
-detour_memory_free(
+threadscan_memory_free(
     _Frees_ptr_ PVOID BaseAddress)
 {
-    return RtlFreeHeap(_detour_memory_heap, 0, BaseAddress);
+    return RtlFreeHeap(_threadscan_memory_heap, 0, BaseAddress);
 }
 
 BOOL
-detour_memory_uninitialize(VOID)
+threadscan_memory_uninitialize(VOID)
 {
-    if (_detour_memory_heap != NULL && _detour_memory_heap != NtCurrentPeb()->ProcessHeap)
+    if (_threadscan_memory_heap != NULL && _threadscan_memory_heap != NtCurrentPeb()->ProcessHeap)
     {
-        _detour_memory_heap = RtlDestroyHeap(_detour_memory_heap);
-        return _detour_memory_heap == NULL;
+        _threadscan_memory_heap = RtlDestroyHeap(_threadscan_memory_heap);
+        return _threadscan_memory_heap == NULL;
     }
 
     return TRUE;

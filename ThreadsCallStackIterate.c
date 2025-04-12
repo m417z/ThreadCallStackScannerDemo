@@ -139,7 +139,7 @@ void ThreadsCallStackIterate(
     void* userData) {
     HANDLE* suspendedHandles = NULL;
     ULONG suspendedHandleCount = 0;
-    NTSTATUS status = detour_thread_suspend(&suspendedHandles, &suspendedHandleCount);
+    NTSTATUS status = threadscan_thread_suspend(&suspendedHandles, &suspendedHandleCount);
     if (NT_SUCCESS(status) && suspendedHandles) {
         for (ULONG i = 0; i < suspendedHandleCount; i++) {
             if (!ThreadCallStackIterate(suspendedHandles[i], callback, userData)) {
@@ -148,8 +148,8 @@ void ThreadsCallStackIterate(
             }
         }
 
-        detour_thread_resume(suspendedHandles, suspendedHandleCount);
+        threadscan_thread_resume(suspendedHandles, suspendedHandleCount);
     }
 
-    detour_memory_uninitialize();
+    threadscan_memory_uninitialize();
 }

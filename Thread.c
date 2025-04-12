@@ -16,7 +16,7 @@
 static HANDLE s_Handles[32];
 
 NTSTATUS
-detour_thread_suspend(
+threadscan_thread_suspend(
     _Outptr_result_maybenull_ PHANDLE* SuspendedHandles,
     _Out_ PULONG SuspendedHandleCount)
 {
@@ -84,14 +84,14 @@ detour_thread_suspend(
             PHANDLE p;
             if (Buffer == s_Handles)
             {
-                p = (PHANDLE)detour_memory_alloc(BufferCapacity * sizeof(HANDLE));
+                p = (PHANDLE)threadscan_memory_alloc(BufferCapacity * sizeof(HANDLE));
                 if (p)
                 {
                     RtlCopyMemory(p, Buffer, SuspendedCount * sizeof(HANDLE));
                 }
             } else
             {
-                p = (PHANDLE)detour_memory_realloc(Buffer, BufferCapacity * sizeof(HANDLE));
+                p = (PHANDLE)threadscan_memory_realloc(Buffer, BufferCapacity * sizeof(HANDLE));
             }
 
             if (p)
@@ -130,7 +130,7 @@ detour_thread_suspend(
 
         if (Buffer != s_Handles)
         {
-            detour_memory_free(Buffer);
+            threadscan_memory_free(Buffer);
         }
 
         Buffer = NULL;
@@ -144,7 +144,7 @@ detour_thread_suspend(
 }
 
 VOID
-detour_thread_resume(
+threadscan_thread_resume(
     _In_reads_(SuspendedHandleCount) _Frees_ptr_ PHANDLE SuspendedHandles,
     _In_ ULONG SuspendedHandleCount)
 {
@@ -158,6 +158,6 @@ detour_thread_resume(
 
     if (SuspendedHandles != s_Handles)
     {
-        detour_memory_free(SuspendedHandles);
+        threadscan_memory_free(SuspendedHandles);
     }
 }
