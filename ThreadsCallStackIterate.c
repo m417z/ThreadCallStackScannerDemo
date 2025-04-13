@@ -22,19 +22,10 @@
 static BOOL ThreadCallStackIterate(
     HANDLE threadHandle,
     ThreadCallStackIterCallback callback,
-    void* userData) {
+    void* userData,
+    BOOL* abort) {
     CONTEXT context;
-    /*
-     * Work-around an issue in Arm64 (and Arm64EC) in which LR and FP registers may become zeroed
-     * when CONTEXT_CONTROL is used without CONTEXT_INTEGER.
-     *
-     * See also: https://github.com/microsoft/Detours/pull/313
-     */
-#if defined(_ARM64_)
-    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-#else
-    context.ContextFlags = CONTEXT_CONTROL;
-#endif
+    context.ContextFlags = CONTEXT_ALL;
     NTSTATUS status = NtGetContextThread(threadHandle, &context);
     if (!NT_SUCCESS(status)) {
         // Continue to the next thread if we can't get the context.
@@ -45,8 +36,8 @@ static BOOL ThreadCallStackIterate(
     // http://www.nynaeve.net/Code/StackWalk64.cpp
     // https://blog.s-schoener.com/2025-01-24-stack-walking-generated-code/
     while (context.CONTEXT_PC != 0) {
-        if (!callback(threadHandle, (void*)context.CONTEXT_PC, userData)) {
-            // If the callback returns FALSE, we stop iterating.
+        if (*abort || !callback(threadHandle, (void*)context.CONTEXT_PC, userData)) {
+            // If aborted or the callback returns FALSE, we stop iterating.
             return FALSE;
         }
 
@@ -66,6 +57,136 @@ static BOOL ThreadCallStackIterate(
     }
 
     return TRUE;
+}
+
+typedef struct {
+    ThreadCallStackIterCallback callback;
+    void* userData;
+    BOOL abort;
+    HANDLE eventWorkerReady;
+    HANDLE eventWorkerStart;
+    HANDLE eventWorkerDone;
+    HANDLE* suspendedHandles;
+    ULONG suspendedHandleCount;
+} WorkerThreadParam;
+
+static DWORD CALLBACK WorkerThread(LPVOID lpParameter) {
+    WorkerThreadParam* param = (WorkerThreadParam*)lpParameter;
+
+    ThreadCallStackIterCallback callback = param->callback;
+    void* userData = param->userData;
+    BOOL* abort = &param->abort;
+    HANDLE eventWorkerReady = param->eventWorkerReady;
+    HANDLE eventWorkerStart = param->eventWorkerStart;
+    HANDLE eventWorkerDone = param->eventWorkerDone;
+
+    SetEvent(eventWorkerReady);
+    WaitForSingleObject(eventWorkerStart, INFINITE);
+
+    HANDLE* suspendedHandles = param->suspendedHandles;
+    ULONG suspendedHandleCount = param->suspendedHandleCount;
+
+    for (ULONG i = 0; i < suspendedHandleCount; i++) {
+        if (!ThreadCallStackIterate(suspendedHandles[i], callback, userData, abort)) {
+            break;
+        }
+    }
+
+    SetEvent(eventWorkerDone);
+
+    return 0;
+}
+
+static BOOL ThreadsCallStackIterateImpl(
+    ThreadCallStackIterCallback callback,
+    void* userData,
+    DWORD timeout) {
+    BOOL result = FALSE;
+    HANDLE workerThread = NULL;
+    WorkerThreadParam workerThreadParam = {
+        .callback = callback,
+        .userData = userData,
+        .abort = FALSE,
+        .eventWorkerReady = CreateEvent(NULL, FALSE, FALSE, NULL),
+        .eventWorkerStart = CreateEvent(NULL, FALSE, FALSE, NULL),
+        .eventWorkerDone = CreateEvent(NULL, FALSE, FALSE, NULL),
+    };
+
+    if (!workerThreadParam.eventWorkerReady ||
+        !workerThreadParam.eventWorkerStart ||
+        !workerThreadParam.eventWorkerDone) {
+        goto exit;
+    }
+
+    DWORD workerThreadId;
+    workerThread = CreateThread(
+        NULL, // default security attributes
+        0,    // default stack size
+        WorkerThread,
+        &workerThreadParam,
+        0,    // default creation flags
+        &workerThreadId
+    );
+    if (!workerThread) {
+        goto exit;
+    }
+
+    WaitForSingleObject(workerThreadParam.eventWorkerReady, INFINITE);
+
+    // Do the bare minimum when threads are suspended to avoid deadlocks.
+    // For that reason, the worker thread is created before that.
+    NTSTATUS status = threadscan_thread_suspend(
+        &workerThreadParam.suspendedHandles, &workerThreadParam.suspendedHandleCount, workerThreadId);
+    if (!NT_SUCCESS(status)) {
+        workerThreadParam.abort = TRUE;
+        workerThreadParam.suspendedHandles = NULL;
+        workerThreadParam.suspendedHandleCount = 0;
+    }
+
+    SetEvent(workerThreadParam.eventWorkerStart);
+
+    // There are mainly two reasons for a timeout:
+    // * The callback is taking too long for the given timeout.
+    // * One of the suspended threads is holding a lock which prevents stack walking, see:
+    //   https://devblogs.microsoft.com/oldnewthing/20250411-00/?p=111066
+    //   Once threads are resumed, it should be able to proceed.
+    if (!workerThreadParam.abort &&
+        WaitForSingleObject(workerThreadParam.eventWorkerDone, timeout) != WAIT_OBJECT_0) {
+        workerThreadParam.abort = TRUE;
+    }
+
+    if (!workerThreadParam.abort) {
+        result = TRUE;
+    }
+
+    if (workerThreadParam.suspendedHandles) {
+        threadscan_thread_resume(workerThreadParam.suspendedHandles, workerThreadParam.suspendedHandleCount);
+    }
+
+    WaitForSingleObject(workerThread, INFINITE);
+
+exit:
+    if (workerThreadParam.suspendedHandles) {
+        threadscan_thread_free(workerThreadParam.suspendedHandles, workerThreadParam.suspendedHandleCount);
+    }
+
+    if (workerThread) {
+        CloseHandle(workerThread);
+    }
+
+    if (workerThreadParam.eventWorkerReady) {
+        CloseHandle(workerThreadParam.eventWorkerReady);
+    }
+
+    if (workerThreadParam.eventWorkerStart) {
+        CloseHandle(workerThreadParam.eventWorkerStart);
+    }
+
+    if (workerThreadParam.eventWorkerDone) {
+        CloseHandle(workerThreadParam.eventWorkerDone);
+    }
+
+    return result;
 }
 
 #elif defined(_X86_)
@@ -132,18 +253,25 @@ static BOOL ThreadCallStackIterate(
     return TRUE;
 }
 
-#endif
-
-void ThreadsCallStackIterate(
+static BOOL ThreadsCallStackIterateImpl(
     ThreadCallStackIterCallback callback,
-    void* userData) {
+    void* userData,
+    DWORD timeout) {
+    BOOL result = TRUE;
+    DWORD startTime = GetTickCount();
     HANDLE* suspendedHandles = NULL;
     ULONG suspendedHandleCount = 0;
-    NTSTATUS status = threadscan_thread_suspend(&suspendedHandles, &suspendedHandleCount);
+    NTSTATUS status = threadscan_thread_suspend(&suspendedHandles, &suspendedHandleCount, 0);
     if (NT_SUCCESS(status) && suspendedHandles) {
         for (ULONG i = 0; i < suspendedHandleCount; i++) {
             if (!ThreadCallStackIterate(suspendedHandles[i], callback, userData)) {
                 // If the callback returns FALSE, we stop iterating.
+                break;
+            }
+
+            DWORD elapsedTime = GetTickCount() - startTime;
+            if (elapsedTime >= timeout) {
+                result = FALSE;
                 break;
             }
         }
@@ -151,5 +279,18 @@ void ThreadsCallStackIterate(
         threadscan_thread_resume(suspendedHandles, suspendedHandleCount);
     }
 
+    return result;
+}
+
+#endif
+
+BOOL ThreadsCallStackIterate(
+    ThreadCallStackIterCallback callback,
+    void* userData,
+    DWORD timeout) {
+    return ThreadsCallStackIterateImpl(callback, userData, timeout);
+}
+
+void ThreadsCallStackCleanup() {
     threadscan_memory_uninitialize();
 }

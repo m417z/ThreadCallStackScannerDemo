@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ThreadCallStackScannerDemo.c">
+    <ClCompile Include="ThreadCallStackScannerDemo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ThreadsCallStackIterate.c">
@@ -27,6 +27,9 @@
     <ClCompile Include="Memory.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ThreadsCallStackWaitForRegions.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ThreadsCallStackIterate.h">
@@ -36,6 +39,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Memory.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThreadsCallStackWaitForRegions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

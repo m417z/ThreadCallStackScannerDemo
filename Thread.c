@@ -18,13 +18,13 @@ static HANDLE s_Handles[32];
 NTSTATUS
 threadscan_thread_suspend(
     _Outptr_result_maybenull_ PHANDLE* SuspendedHandles,
-    _Out_ PULONG SuspendedHandleCount)
+    _Out_ PULONG SuspendedHandleCount,
+    _In_ ULONG ThreadIdToSkip)
 {
     NTSTATUS Status;
     PHANDLE Buffer = s_Handles;
     ULONG BufferCapacity = ARRAYSIZE(s_Handles);
     ULONG SuspendedCount = 0;
-    BOOL CurrentThreadSkipped = FALSE;
     HANDLE CurrentTID = (HANDLE)(ULONG_PTR)NtCurrentThreadId();
     BOOL ClosePrevThread = FALSE;
     HANDLE ThreadHandle = NULL;
@@ -50,23 +50,20 @@ threadscan_thread_suspend(
         ThreadHandle = NextThreadHandle;
         ClosePrevThread = TRUE;
 
-        /* Skip the current thread */
-        if (!CurrentThreadSkipped)
+        THREAD_BASIC_INFORMATION BasicInformation;
+        if (!NT_SUCCESS(NtQueryInformationThread(ThreadHandle,
+            ThreadBasicInformation,
+            &BasicInformation,
+            sizeof(BasicInformation),
+            NULL)))
         {
-            THREAD_BASIC_INFORMATION BasicInformation;
-            if (!NT_SUCCESS(NtQueryInformationThread(ThreadHandle,
-                                                     ThreadBasicInformation,
-                                                     &BasicInformation,
-                                                     sizeof(BasicInformation),
-                                                     NULL)))
-            {
-                continue;
-            }
-            if (BasicInformation.ClientId.UniqueThread == CurrentTID)
-            {
-                CurrentThreadSkipped = TRUE;
-                continue;
-            }
+            continue;
+        }
+
+        if (BasicInformation.ClientId.UniqueThread == CurrentTID ||
+            BasicInformation.ClientId.UniqueThread == (HANDLE)(ULONG_PTR)ThreadIdToSkip)
+        {
+            continue;
         }
 
         if (!NT_SUCCESS(NtSuspendThread(ThreadHandle, NULL)))
@@ -145,7 +142,7 @@ threadscan_thread_suspend(
 
 VOID
 threadscan_thread_resume(
-    _In_reads_(SuspendedHandleCount) _Frees_ptr_ PHANDLE SuspendedHandles,
+    _In_reads_(SuspendedHandleCount) PHANDLE SuspendedHandles,
     _In_ ULONG SuspendedHandleCount)
 {
     ULONG i;
@@ -153,6 +150,18 @@ threadscan_thread_resume(
     for (i = 0; i < SuspendedHandleCount; i++)
     {
         NtResumeThread(SuspendedHandles[i], NULL);
+    }
+}
+
+VOID
+threadscan_thread_free(
+    _In_reads_(SuspendedHandleCount) _Frees_ptr_ PHANDLE SuspendedHandles,
+    _In_ ULONG SuspendedHandleCount)
+{
+    ULONG i;
+
+    for (i = 0; i < SuspendedHandleCount; i++)
+    {
         NtClose(SuspendedHandles[i]);
     }
 
