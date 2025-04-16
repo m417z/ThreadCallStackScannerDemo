@@ -112,6 +112,22 @@ static BOOL ThreadCallStackIterate(
             return FALSE;
         }
 
+        // The disabled code below is from Chromium (see reference links below).
+        // They assume that the stack pointer can only be re-used by ARM64 leaf
+        // frames, but it doesn't seem to be the case in practice. Example call
+        // stack excerpt below.
+        //
+        // I'm not sure about x64, but I'll just be on the safe side and always
+        // assume that's possible.
+        //
+        // 0:000> k
+        // ...
+        // 2c 0000007c`1792ed30 00007ff8`e0108014     ntdll!KiUserCallbackDispatcherReturn
+        // 2d 0000007c`1792eda0 00007ff8`e2c6bd48     win32u!NtUserPeekMessage+0x4
+        // 2e 0000007c`1792eda0 00007ff8`e2c64410     user32!_PeekMessage+0x30
+        // 2f 0000007c`1792ee10 00007ff8`e2c648c0     user32!DialogBox2+0x1c8
+        // ...
+#if 0
         lastStackLimit = context.CONTEXT_SP + sizeof(DWORD64);
 
 #if defined(_ARM64_)
@@ -120,6 +136,9 @@ static BOOL ThreadCallStackIterate(
         if (firstIteration) {
             lastStackLimit -= sizeof(DWORD64);
         }
+#endif
+#else
+        lastStackLimit = context.CONTEXT_SP;
 #endif
 
         firstIteration = FALSE;
