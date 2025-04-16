@@ -32,23 +32,50 @@ static BOOL ThreadCallStackIterate(
         return TRUE;
     }
 
+    if (*abort || !callback(threadHandle, (void*)context.CONTEXT_PC, userData)) {
+        // If aborted or the callback returns FALSE, we stop iterating.
+        return FALSE;
+    }
+
+    THREAD_BASIC_INFORMATION threadInfo;
+    if (!NT_SUCCESS(NtQueryInformationThread(
+        threadHandle,
+        ThreadBasicInformation,
+        &threadInfo,
+        sizeof(threadInfo),
+        NULL
+    ))) {
+        // Continue to the next thread if we can't get the thread information.
+        return TRUE;
+    }
+
+    DWORD64 stackBase = (DWORD64)threadInfo.TebBaseAddress->NtTib.StackBase;
+    DWORD64 stackLimit = (DWORD64)threadInfo.TebBaseAddress->NtTib.StackLimit;
+
+    DWORD64 lastStackLimit = stackLimit;
+
+    BOOL firstIteration = TRUE;
+
     // References:
     // http://www.nynaeve.net/Code/StackWalk64.cpp
     // https://blog.s-schoener.com/2025-01-24-stack-walking-generated-code/
     // Implementation references:
     // https://chromium.googlesource.com/chromium/src/base/+/refs/heads/main/profiler/native_unwinder_win.cc
     // https://chromium.googlesource.com/chromium/src/base/+/refs/heads/main/profiler/win32_stack_frame_unwinder.cc
-    while (context.CONTEXT_PC != 0) {
-        if (*abort || !callback(threadHandle, (void*)context.CONTEXT_PC, userData)) {
-            // If aborted or the callback returns FALSE, we stop iterating.
-            return FALSE;
-        }
-
+    while (TRUE) {
         DWORD64 imageBase;
         RUNTIME_FUNCTION* function = RtlLookupFunctionEntry(context.CONTEXT_PC, &imageBase, NULL);
 
         // If there is no function entry, then this is a leaf function.
         if (!function) {
+            if (!firstIteration) {
+                // In theory we shouldn't get here, as it means we've
+                // encountered a function without unwind information below the
+                // top of the stack, which is forbidden by the Microsoft x64
+                // calling convention.
+                break;
+            }
+
 #if defined(_AMD64_)
             // For X64, return address is at RSP.
             context.Rip = *(DWORD64*)context.Rsp;
@@ -58,8 +85,8 @@ static BOOL ThreadCallStackIterate(
             // Add CONTEXT_UNWOUND_TO_CALL flag to avoid unwind ambiguity for
             // tailcall on ARM64, because padding after tailcall is not
             // guaranteed.
-            context->Pc = context->Lr;
-            context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+            context.Pc = context.Lr;
+            context.ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
 #else
 #error Unsupported Windows 64-bit Architecture
 #endif
@@ -68,6 +95,34 @@ static BOOL ThreadCallStackIterate(
             DWORD64 establisherFrame;
             RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.CONTEXT_PC, function, &context, &handlerData, &establisherFrame, NULL);
         }
+
+        if (context.CONTEXT_PC == 0) {
+            break;
+        }
+
+        // Check if the stack pointer is within the stack limits.
+        if (context.CONTEXT_SP < lastStackLimit ||
+            context.CONTEXT_SP + sizeof(DWORD64) > stackBase) {
+            // Stack pointer is out of bounds, stop iterating.
+            break;
+        }
+
+        if (*abort || !callback(threadHandle, (void*)context.CONTEXT_PC, userData)) {
+            // If aborted or the callback returns FALSE, we stop iterating.
+            return FALSE;
+        }
+
+        lastStackLimit = context.CONTEXT_SP + sizeof(DWORD64);
+
+#if defined(_ARM64_)
+        // Leaf frames on Arm can re-use the stack pointer, so they can validly
+        // have the same stack pointer as the previous frame.
+        if (firstIteration) {
+            lastStackLimit -= sizeof(DWORD64);
+        }
+#endif
+
+        firstIteration = FALSE;
     }
 
     return TRUE;
