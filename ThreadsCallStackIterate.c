@@ -35,6 +35,9 @@ static BOOL ThreadCallStackIterate(
     // References:
     // http://www.nynaeve.net/Code/StackWalk64.cpp
     // https://blog.s-schoener.com/2025-01-24-stack-walking-generated-code/
+    // Implementation references:
+    // https://chromium.googlesource.com/chromium/src/base/+/refs/heads/main/profiler/native_unwinder_win.cc
+    // https://chromium.googlesource.com/chromium/src/base/+/refs/heads/main/profiler/win32_stack_frame_unwinder.cc
     while (context.CONTEXT_PC != 0) {
         if (*abort || !callback(threadHandle, (void*)context.CONTEXT_PC, userData)) {
             // If aborted or the callback returns FALSE, we stop iterating.
@@ -46,9 +49,20 @@ static BOOL ThreadCallStackIterate(
 
         // If there is no function entry, then this is a leaf function.
         if (!function) {
-            // Unwind the leaf: SP points to the old PC.
-            context.CONTEXT_PC = *(DWORD64*)context.CONTEXT_SP;
-            context.CONTEXT_SP += sizeof(DWORD64);
+#if defined(_AMD64_)
+            // For X64, return address is at RSP.
+            context.Rip = *(DWORD64*)context.Rsp;
+            context.Rsp += sizeof(DWORD64);
+#elif defined(_ARM64_)
+            // For leaf function on Windows ARM64, return address is at LR(X30).
+            // Add CONTEXT_UNWOUND_TO_CALL flag to avoid unwind ambiguity for
+            // tailcall on ARM64, because padding after tailcall is not
+            // guaranteed.
+            context->Pc = context->Lr;
+            context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+#else
+#error Unsupported Windows 64-bit Architecture
+#endif
         } else {
             void* handlerData;
             DWORD64 establisherFrame;
