@@ -62,6 +62,7 @@ static BOOL ThreadCallStackIterate(
     // Implementation references:
     // https://chromium.googlesource.com/chromium/src/base/+/refs/heads/main/profiler/native_unwinder_win.cc
     // https://chromium.googlesource.com/chromium/src/base/+/refs/heads/main/profiler/win32_stack_frame_unwinder.cc
+    // https://github.com/dotnet/runtime/blob/15bcd62bb240635f8f5ce4b7a4b3a07bb65e5ac3/src/coreclr/vm/stackwalk.cpp#L470
     while (TRUE) {
         DWORD64 imageBase;
         RUNTIME_FUNCTION* function = RtlLookupFunctionEntry(context.CONTEXT_PC, &imageBase, NULL);
@@ -81,6 +82,13 @@ static BOOL ThreadCallStackIterate(
             context.Rip = *(DWORD64*)context.Rsp;
             context.Rsp += sizeof(DWORD64);
 #elif defined(_ARM64_)
+            if (context.Pc == context.Lr) {
+                // If the old control PC is the same as the return address, then
+                // no progress is being made and the stack is most likely
+                // malformed.
+                break;
+            }
+
             // For leaf function on Windows ARM64, return address is at LR(X30).
             // Add CONTEXT_UNWOUND_TO_CALL flag to avoid unwind ambiguity for
             // tailcall on ARM64, because padding after tailcall is not
@@ -112,13 +120,9 @@ static BOOL ThreadCallStackIterate(
             return FALSE;
         }
 
-        // The disabled code below is from Chromium (see reference links below).
-        // They assume that the stack pointer can only be re-used by ARM64 leaf
-        // frames, but it doesn't seem to be the case in practice. Example call
-        // stack excerpt below.
-        //
-        // I'm not sure about x64, but I'll just be on the safe side and always
-        // assume that's possible.
+#if defined(_ARM64_)
+        // The stack pointer can be re-used by ARM64 leaf frames. Example call
+        // stack excerpt:
         //
         // 0:000> k
         // ...
@@ -127,18 +131,10 @@ static BOOL ThreadCallStackIterate(
         // 2e 0000007c`1792eda0 00007ff8`e2c64410     user32!_PeekMessage+0x30
         // 2f 0000007c`1792ee10 00007ff8`e2c648c0     user32!DialogBox2+0x1c8
         // ...
-#if 0
-        lastStackLimit = context.CONTEXT_SP + sizeof(DWORD64);
-
-#if defined(_ARM64_)
-        // Leaf frames on Arm can re-use the stack pointer, so they can validly
-        // have the same stack pointer as the previous frame.
-        if (firstIteration) {
-            lastStackLimit -= sizeof(DWORD64);
-        }
-#endif
-#else
         lastStackLimit = context.CONTEXT_SP;
+#else
+        // For x64, the stack pointer should never be re-used.
+        lastStackLimit = context.CONTEXT_SP + sizeof(DWORD64);
 #endif
 
         firstIteration = FALSE;
