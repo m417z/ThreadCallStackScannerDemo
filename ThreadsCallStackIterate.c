@@ -67,6 +67,9 @@ static BOOL ThreadCallStackIterate(
         DWORD64 imageBase;
         RUNTIME_FUNCTION* function = RtlLookupFunctionEntry(context.CONTEXT_PC, &imageBase, NULL);
 
+        DWORD64 prevPc = context.CONTEXT_PC;
+        DWORD64 prevSp = context.CONTEXT_SP;
+
         // If there is no function entry, then this is a leaf function.
         if (!function) {
             if (!firstIteration) {
@@ -82,13 +85,6 @@ static BOOL ThreadCallStackIterate(
             context.Rip = *(DWORD64*)context.Rsp;
             context.Rsp += sizeof(DWORD64);
 #elif defined(_ARM64_)
-            if (context.Pc == context.Lr) {
-                // If the old control PC is the same as the return address, then
-                // no progress is being made and the stack is most likely
-                // malformed.
-                break;
-            }
-
             // For leaf function on Windows ARM64, return address is at LR(X30).
             // Add CONTEXT_UNWOUND_TO_CALL flag to avoid unwind ambiguity for
             // tailcall on ARM64, because padding after tailcall is not
@@ -105,6 +101,11 @@ static BOOL ThreadCallStackIterate(
         }
 
         if (context.CONTEXT_PC == 0) {
+            break;
+        }
+
+        if (context.CONTEXT_PC == prevPc && context.CONTEXT_SP == prevSp) {
+            // We are likely in a loop, stop iterating.
             break;
         }
 
